@@ -1,0 +1,31 @@
+node_modules/
+.next/
+out/
+
+# never publish any environment file except the template
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+data/*
+!data/.gitkeep
+
+# Runtime data of the compose stack (Postgres + MinIO bind mounts)
+postgres/
+minio/
+
+# stray fs-driver blobs outside data/
+blobs/
+
+# editor settings and scratch captures
+.vscode/
+/image.png
+
+# contest: only images and diagrams are versioned
+contest/*
+!contest/images/
+!contest/diagrams/

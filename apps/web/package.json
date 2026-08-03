@@ -1,0 +1,27 @@
+{
+  "name": "@quoteredy/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/model-viewer": "^4.3.1",
+    "@quoteredy/core": "*",
+    "@quoteredy/storage": "*",
+    "busboy": "^1.6.0",
+    "next": "16.2.12",
+    "puppeteer-core": "^25.4.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/busboy": "^1.5.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0"
+  }
+}

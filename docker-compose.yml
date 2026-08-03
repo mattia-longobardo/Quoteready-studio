@@ -1,0 +1,155 @@
+services:
+
+# QuoteReady Studio # --------------------------------------------------------------------------------------------------------------
+
+  quoteredy-studio:
+    build: .
+    image: quoteredy-studio:latest
+    container_name: quoteredy-studio
+    user: "1000:1000"
+    depends_on:
+      quoteredy-db:
+        condition: service_healthy
+      quoteredy-minio:
+        condition: service_healthy
+    environment:
+      ZOO_OAUTH_CLIENT_ID: ${ZOO_OAUTH_CLIENT_ID:-}
+      ZOO_OAUTH_REDIRECT_URI: ${ZOO_OAUTH_REDIRECT_URI}
+      QUOTE_READY_SESSION_SECRET: ${QUOTE_READY_SESSION_SECRET}
+      QUOTE_READY_DATA_DIR: /app/data
+      QUOTEREADY_STORAGE_DRIVER: ${QUOTEREADY_STORAGE_DRIVER:-postgres}
+      QUOTEREADY_DATABASE_URL: postgresql://${QUOTEREADY_DB_USER}:${DB_QUOTEREADY_PASSWORD}@quoteredy-db:5432/${QUOTEREADY_DB_NAME}
+      QUOTEREADY_BLOB_DRIVER: ${QUOTEREADY_BLOB_DRIVER:-s3}
+      QUOTEREADY_PERSIST_UPLOADS: ${QUOTEREADY_PERSIST_UPLOADS:-true}
+      QUOTEREADY_S3_ENDPOINT: http://quoteredy-minio:9000
+      QUOTEREADY_S3_REGION: ${QUOTEREADY_S3_REGION:-us-east-1}
+      QUOTEREADY_S3_BUCKET: ${QUOTEREADY_S3_BUCKET:-quoteredy}
+      QUOTEREADY_S3_ACCESS_KEY_ID: ${QUOTEREADY_MINIO_ROOT_USER}
+      QUOTEREADY_S3_SECRET_ACCESS_KEY: ${QUOTEREADY_MINIO_ROOT_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    init: true
+    mem_limit: 2g
+    cpus: "2.0"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health | grep -q '\"status\":\"ok\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy_public"
+      - "traefik.http.routers.quoteredy-studio-router.rule=Host(`${QUOTEREADY_HOST}`)"
+      - "traefik.http.routers.quoteredy-studio-router.entrypoints=web"
+      - "traefik.http.services.quoteredy-studio-service.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.quoteredy-studio-https.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.quoteredy-studio-body-limit.buffering.maxRequestBodyBytes=33554432"
+      - "traefik.http.middlewares.quoteredy-studio-body-limit.buffering.memRequestBodyBytes=1048576"
+      - "traefik.http.routers.quoteredy-studio-router.middlewares=quoteredy-studio-https,quoteredy-studio-body-limit"
+    networks:
+      - proxy_public
+      - quoteredy_internal
+
+# QuoteReady DB # --------------------------------------------------------------------------------------------------------------
+
+  quoteredy-db:
+    image: postgres:18
+    container_name: quoteredy-db
+    user: "1000:1000"
+    environment:
+      POSTGRES_USER: ${QUOTEREADY_DB_USER}
+      POSTGRES_PASSWORD: ${DB_QUOTEREADY_PASSWORD}
+      POSTGRES_DB: ${QUOTEREADY_DB_NAME}
+      TZ: ${TZ}
+    volumes:
+      - ./postgres:/var/lib/postgresql
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${QUOTEREADY_DB_USER} -d ${QUOTEREADY_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      - "autoheal=true"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - quoteredy_internal
+
+# QuoteReady MinIO # --------------------------------------------------------------------------------------------------------------
+
+  quoteredy-minio:
+    image: minio/minio:latest
+    container_name: quoteredy-minio
+    user: "1000:1000"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${QUOTEREADY_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${QUOTEREADY_MINIO_ROOT_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - ./minio:/data
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      - "autoheal=true"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - quoteredy_internal
+
+# QuoteReady MinIO Init # --------------------------------------------------------------------------------------------------------------
+
+  quoteredy-minio-init:
+    image: minio/mc:latest
+    container_name: quoteredy-minio-init
+    depends_on:
+      quoteredy-minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - >
+        mc alias set quoteredy http://quoteredy-minio:9000
+        "${QUOTEREADY_MINIO_ROOT_USER}" "${QUOTEREADY_MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing "quoteredy/${QUOTEREADY_S3_BUCKET:-quoteredy}"
+    restart: "no"
+    mem_limit: 128m
+    cpus: "0.25"
+    networks:
+      - quoteredy_internal
+
+networks:
+  proxy_public:
+    external: true
+  quoteredy_internal:
+    name: quoteredy_internal
+    internal: true
