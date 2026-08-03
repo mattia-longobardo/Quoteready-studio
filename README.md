@@ -29,7 +29,12 @@ an ISO 7200 title block.</sub>
      on its own line, that URL renders as an inline video player. Do not wrap it
      in ![]() or <video> — both break the player. -->
 
-**[▶ Watch the walkthrough — contest/demo.mp4](contest/demo.mp4)** (1 min 15 s, 1920 × 1080)
+ 
+**<a href="https://quoteready.longobardo.me/">DEMO LINK</a>**
+
+https://github.com/user-attachments/assets/431e0769-db9f-4be8-979d-054fe356bfb1
+
+(1 min 15 s, 1920 × 1080)
 
 <sub>Upload a STEP file, Zoo converts and measures it live, the app compares
 five priced manufacturing routes, then the same part is replanned against the
