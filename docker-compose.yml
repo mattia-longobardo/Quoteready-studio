@@ -65,7 +65,7 @@ services:
 # QuoteReady DB # --------------------------------------------------------------------------------------------------------------
 
   quoteredy-db:
-    image: postgres:18
+    image: pgvector/pgvector:pg18
     container_name: quoteredy-db
     user: "1000:1000"
     environment:
@@ -97,7 +97,7 @@ services:
 # QuoteReady MinIO # --------------------------------------------------------------------------------------------------------------
 
   quoteredy-minio:
-    image: minio/minio:latest
+    image: pgsty/minio:latest
     container_name: quoteredy-minio
     user: "1000:1000"
     command: server /data --console-address ":9001"

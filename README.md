@@ -23,15 +23,6 @@ an ISO 7200 title block.</sub>
 
 ## Demo
 
-<!-- After the repository is pushed: open this file in GitHub's web editor, drag
-     contest/demo.mp4 into the edit box, and replace the link line below with the
-     bare https://github.com/user-attachments/assets/… URL GitHub inserts. Left
-     on its own line, that URL renders as an inline video player. Do not wrap it
-     in ![]() or <video> — both break the player. -->
-
- 
-**<a href="https://quoteready.longobardo.me/">DEMO LINK</a>**
-
 https://github.com/user-attachments/assets/431e0769-db9f-4be8-979d-054fe356bfb1
 
 (1 min 15 s, 1920 × 1080)
@@ -43,9 +34,6 @@ them runnable in-house. It closes on the two artefacts — the A4 engineering
 report and the ISO A3 technical drawing whose datum frame and tolerance table
 the Zoo agent proposed. Chapter list in
 <a href="docs/DEMO.md#recorded-walkthrough-chapters">docs/DEMO.md</a>.</sub>
-
-> **Notes for the Zoo team:** while building this we kept a running log of API behaviour,
-> documentation gaps and rough edges — see [`docs/ZOO_API_NOTES.md`](docs/ZOO_API_NOTES.md).
 
 ---
 
@@ -112,134 +100,6 @@ in every export.
 The result is a workspace an estimator can actually defend in a review: for
 every number, *where did this come from, and what happens if it is wrong?*
 
----
-
-## How QuoteReady Studio uses Zoo APIs
-
-![Every Zoo call the app makes](contest/diagrams/03-zoo-apis-used.png)
-
-Fifteen distinct Zoo calls across five services. All calls are server-side; the
-browser never holds a Zoo token and never talks to `api.zoo.dev` directly.
-
-### 1. Identity — Zoo OAuth
-
-`apps/web/lib/zoo-auth.ts`, `apps/web/lib/oauth.ts`
-
-| Endpoint | Use |
-|---|---|
-| `GET /oauth2/authorize` | Authorization Code + S256 PKCE sign-in (scope `user:read modeling`) |
-| `POST /oauth2/token` | Code exchange and refresh-token rotation |
-| `POST /oauth2/token/revoke` | Best-effort token revocation on sign-out |
-| `GET /user` | Workspace identity, display profile, and verification that a stored personal API token belongs to the signed-in account |
-
-The Zoo account **is** the tenant: the workspace is keyed by the Zoo user ID,
-and there is no local password, user table or registration. Tokens live only
-inside an AES-256-GCM sealed, `HttpOnly` cookie (30-day absolute lifetime,
-refreshed within 60 s of expiry).
-
-### 2. Geometry — Zoo File API
-
-`apps/web/lib/zoo.ts`
-
-| Endpoint | Returns |
-|---|---|
-| `POST /file/volume?src_format=…&output_unit=mm3` | solid volume, mm³ |
-| `POST /file/surface-area?src_format=…&output_unit=mm2` | surface area, mm² |
-| `POST /file/center-of-mass?src_format=…&output_unit=mm` | centre of mass, mm |
-| `POST /file/mass?src_format=…&material_density=…&material_density_unit=kg%3Am3&output_unit=g` | mass, g (only when the chosen material has a known density) |
-| `GET /async/operations/{id}` | polling for operations that queue |
-
-The four metrics are POSTed **concurrently** as `application/octet-stream`
-bodies under **one shared 45 s abort deadline** (per call: 20 s initial timeout,
-then up to 18 polls at 500 ms, 8 s each, 128 KiB response ceiling). A metric
-that fails does **not** fail the analysis: it becomes a `failed` entry in the
-report's `apiTrace` and the corresponding value stays `null`. Missing volume is
-the one metric that blocks quote readiness.
-
-These numbers feed the readiness audit, the mass-based material cost, the
-surface-to-volume complexity proxy that drives cycle-time estimates, and the
-part-data box on the drawing sheet.
-
-### 3. CAD translation — Zoo File Conversion API
-
-`apps/web/lib/zoo-model.ts`
-
-| Endpoint | Use |
-|---|---|
-| `POST /file/conversion/{src_format}/gltf` | Convert uploaded CAD (STEP, STL, OBJ, PLY, SLDPRT, FBX) to embedded glTF |
-
-This is the load-bearing call for two features at once:
-
-- the **interactive 3D preview** in the Parts view (`<model-viewer>` renders the
-  stored glTF, served back by `GET /api/parts/model`);
-- the **technical drawing sheet** — the whole drafting pipeline projects the
-  triangle mesh that comes out of this conversion. Without Zoo's translator
-  there would be no tessellated geometry to project, and the app would need a
-  local CAD kernel.
-
-The conversion is best-effort and asynchronous: large files return an operation
-that is polled for up to 45 s, and a failure degrades the part to "no preview"
-instead of failing the upload.
-
-### 4. Manufacturing & drafting intelligence — Zoo ML copilot
-
-`packages/core/src/zoo-copilot.ts` (protocol), `packages/core/src/pricing.ts`,
-`apps/web/lib/drawing-generation.ts`
-
-| Endpoint | Use |
-|---|---|
-| `wss://api.zoo.dev/ws/ml/copilot` | Three distinct prompts, all text-only (`forced_tools: []`) |
-| `wss://…/ws/ml/copilot?replay=true&conversation_id=…` | Resume a turn Zoo interrupted mid-answer |
-
-1. **Manufacturing cost engineer** (80 s budget) — receives the RFQ, the
-   measured geometry, the readiness score and the five deterministic candidates,
-   and returns a ranked JSON estimate. Validated against the contract above
-   before it is allowed near a report. It is also given a bounded *workshop
-   memory* — the routes this user previously selected, their frequent materials
-   and typical quantities — framed explicitly as a tie-breaking signal that must
-   never override the current part's evidence.
-2. **Drafting engineer** (5 min budget, 2 attempts) — receives the archived CAD
-   file as a project file plus the already-measured facts, and chooses the datum
-   reference frame (A, B, C) and the dimensional and geometric tolerance rows
-   itself. The JSON answer is parsed and bounded (≤ 6 datums, ≤ 40 rows,
-   200 chars per field) before it is stored.
-3. **Drawing chat** (120 s budget) — an interactive turn that edits the existing
-   drawing table from a natural-language request ("tighten the bore to H7",
-   "add flatness on the base") and returns the updated table plus a one-sentence
-   reply.
-
-The websocket client is the hardest-won part of this integration. Zoo recycles
-copilot backends mid-prompt, so `runCopilotPrompt` implements in-band
-authentication, a 30 s ping keepalive, a 5-minute stall watchdog, exponential
-reconnect with `?replay=true` (including a MsgPack decoder for the binary replay
-frame), an explicit `continue` resume command, and harvesting of partial output
-so an interrupted turn is never thrown away. Every failure carries diagnostics
-("conversation established, 0 chars streamed, 3 reconnects, api call …").
-See **[docs/ZOO_API_NOTES.md](docs/ZOO_API_NOTES.md)** for the full field report.
-
-### 5. Design library & account — Zoo Projects and Billing
-
-`apps/web/app/api/zoo/projects/route.ts`, `apps/web/app/api/zoo/upload/route.ts`,
-`apps/web/app/api/zoo/usage/route.ts`
-
-| Endpoint | Use |
-|---|---|
-| `GET /user/projects?limit=50` | List the signed-in account's Zoo projects; selecting one pre-fills planner context |
-| `POST /user/projects` | Push a local CAD file to Zoo as a new draft project (multipart: `project.toml`, `main.kcl` entrypoint, the CAD file) |
-| `GET /user/payment/balance` | Remaining `monthly_` + `stable_api_credits_remaining`, shown as the "minutes left" badge in the top bar (cached 5 min per user) |
-
-> **Token reality check.** Zoo's OAuth scope set (`user:read`, `modeling`,
-> `admin:write`) has no Projects or ML scope, so a third-party OAuth token gets
-> **HTTP 403** from `/file/*`, `/user/projects` and the copilot socket. Every
-> server-side call therefore goes through `resolveProjectsToken()`, which
-> prefers a **personal Zoo API token** the user pastes into Settings — used only
-> after `GET /user` confirms it belongs to the signed-in account — and falls back
-> to the OAuth token. Library, upload, drawing generation and drawing chat
-> require that personal token and say so in the UI. This is the single biggest
-> integration finding of the project; it is written up in
-> [docs/ZOO_API_NOTES.md](docs/ZOO_API_NOTES.md).
-
----
 
 ## What it does
 
@@ -346,8 +206,7 @@ My factory, is in [`contest/images/`](contest/images/)._
 ### Prerequisites
 
 - **Node.js 24+** and npm (the container image is built on `node:24-alpine`).
-- A **Zoo account** and a **Zoo OAuth application** — see
-  [docs/OAUTH_SETUP.md](docs/OAUTH_SETUP.md).
+- A **Zoo account** and a **Zoo OAuth application**
 - A **personal Zoo API token** (Zoo dashboard → API tokens) for the library,
   CAD upload, drawing generation and drawing chat. Pasted into the in-app
   Settings page, not into `.env`.
@@ -483,8 +342,6 @@ docker exec quoteredy-studio wget -qO- http://127.0.0.1:3000/api/health
 curl --fail "https://${QUOTEREADY_HOST}/api/health"
 ```
 
-Full procedure, upgrade and rollback: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-Day-two runbook: [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ---
 
@@ -530,136 +387,6 @@ npm run build
 | `packages/core/tests/zoo-copilot.live.test.ts` | 1 | Opt-in live copilot contract check (skipped without a token) |
 | `packages/storage/tests/platform-store.test.ts` | 22 | Quotas, ownership isolation, attachments, revisions, folder modes |
 
-The full manual, browser and live-Zoo matrix is in
-[docs/TESTING.md](docs/TESTING.md).
-
-### Repository layout
-
-An npm-workspaces monorepo, so the domain model and the persistence layer can be
-tested without the web layer:
-
-```text
-apps/web/                             Next.js 16 app router, route handlers, UI
-  app/(platform)/                     The nine authenticated views
-  app/login/                          Sign-in gate
-  app/api/                            23 route handlers (see docs/API.md)
-  components/                         Shell, planner, per-view components
-  lib/zoo.ts                          File API metrics + async polling
-  lib/zoo-model.ts                    CAD to glTF conversion + preview storage
-  lib/zoo-auth.ts                     OAuth exchange, refresh, revoke, session cookie
-  lib/zoo-projects.ts                 Personal-token resolution and verification
-  lib/gltf-mesh.ts                    glTF/GLB parsing to a millimetre triangle mesh
-  lib/drawing-features.ts             Planar-face, pocket and pocket-array recognition
-  lib/drawing-views.ts                Orthographic projection, section, hidden lines
-  lib/drawing-annotations.ts          ISO 129 dimensions, GD&T frames, balloons
-  lib/drawing-sheet.ts                ISO A3 sheet HTML + title block
-  lib/drawing-generation.ts           Copilot prompts for tables and chat
-  lib/report-ai.ts                    OpenAI detailed-report generation
-  lib/pdf.ts                          Puppeteer/Chromium HTML to PDF
-  lib/multipart.ts                    Streaming Busboy parser and upload ceilings
-  lib/request-security.ts             Origin checks, bounded readers, rate + single-flight
-  lib/item-naming.ts                  Sequential and dated naming rules
-  lib/part-names.ts                   Duplicate-name 409 contract
-  tests/                              Web-layer unit tests
-packages/core/                        @quoteredy/core — pure domain logic
-  src/types.ts                        Every shared contract
-  src/audit.ts                        Readiness evidence and scoring
-  src/manufacturing.ts                Deterministic routes and cost baselines
-  src/pricing.ts                      Copilot pricing contract, validation, merge, fallback
-  src/user-memory.ts                  Per-user workshop memory
-  src/zoo-copilot.ts                  ML copilot websocket protocol client
-  src/materials.ts, src/parts.ts      Material catalogue, part-identity rules
-packages/storage/                     @quoteredy/storage — persistence adapters
-  src/workspace-store.ts              Domain operations + env-driven driver factory
-  src/json-driver.ts                  Single-file JSON store (atomic rename)
-  src/postgres-driver.ts              Postgres JSONB per user (row-locked)
-  src/fs-blob-store.ts                Filesystem blobs
-  src/s3-blob-store.ts                S3-compatible blobs (MinIO, R2, AWS)
-docs/                                 Product, engineering, security, ops docs
-```
-
-### How the technical drawing is produced
-
-![Drawing generation pipeline](contest/diagrams/02-drawing-pipeline.png)
-
-The most involved subsystem, and worth reading as a pipeline:
-
-```text
-Zoo /file/conversion/{fmt}/gltf   →  glTF with embedded buffers
-  lib/gltf-mesh.ts                →  welded triangle mesh in mm (glTF metres × 1000),
-                                     bounding box; models over 250k triangles rejected
-  lib/drawing-features.ts         →  coplanar planar faces, recessed pockets/slots,
-                                     linear pocket arrays (reachability-ray tested)
-  lib/drawing-views.ts            →  first-angle front / left / top / isometric views,
-                                     section A-A, silhouette + hidden-line removal,
-                                     ISO 5455 scale chosen to fit the 239 × 276 mm area
-  lib/drawing-annotations.ts      →  ISO 129 dimensions (outward arrows below 7 mm),
-                                     ISO 5459 datum indicators, ISO 1101 feature control
-                                     frames (14 characteristics drawn as SVG paths),
-                                     ISO 6433 balloons, collision-avoiding placement
-  lib/drawing-sheet.ts            →  ISO 5457 A3 landscape sheet (420 × 297 mm), zone
-                                     markers, ISO 7200 title block, datum + dimension
-                                     tables, continuation sheets when rows overflow
-  api/drawings/pdf                →  lib/pdf.ts → headless Chromium → PDF (1:1, A3)
-```
-
-Everything in this pipeline downstream of the glTF conversion is deterministic
-local code with no Zoo call. That split is deliberate: the agent is used for the
-judgement call a human draftsman makes (*which faces are the datums, what
-tolerances does this feature need*), and never for the geometry, which must be
-reproducible.
-
-Two details worth noting. The datum letters and tolerance rows drawn on the sheet
-are the ones the Zoo copilot chose, and each balloon number **is** the table row
-number — so the sheet and the inspection table cannot drift apart. And the GD&T
-characteristic symbols are drawn as SVG paths rather than glyphs, because the
-print container has no font containing the GD&T block.
-
-Honest scope of the drafting code: it recognises planar faces, recessed pockets
-and linear pocket arrays. It does **not** fit cylinders, so there is no hole,
-bore, thread, fillet or diameter recognition; there are no per-feature centre
-lines; there is exactly one section, always lettered A; and the title-block
-revision field is fixed at `00`.
-
----
-
-## Engineering guardrails
-
-Because this handles other people's CAD files and other people's API tokens:
-
-**Request boundaries** — same-origin verification on every state-changing route;
-bounded streaming readers (32 KiB JSON, 16 KiB for the demo endpoint, 32 MiB
-multipart with 20 MiB CAD / 10 MiB drawing sub-limits); extension allowlist plus
-magic-byte content checks; unknown RFQ fields rejected rather than ignored;
-per-route rate limits and a per-user single-flight lock on analysis.
-
-**Authentication** — Authorization Code with S256 PKCE and state; AES-256-GCM
-sealed `HttpOnly` cookies with a 30-day absolute cap; the workspace ID always
-derived from the session, never from a request body.
-
-**Secrets at rest** — the user's personal Zoo API token and OpenAI key are
-sealed with the same AES-256-GCM envelope before they touch the store, and the
-API only ever reports `hasZooApiToken` / `hasAiApiKey` booleans back to the
-browser.
-
-**Provider boundaries** — fixed outbound hosts; byte ceilings and timeouts on
-every Zoo and OpenAI response; geometry values range-checked; AI prices and lead
-times clamped to 0.25×–4× the deterministic baseline; AI-authored HTML stripped
-of scripts and inline handlers and rendered in a sandboxed iframe (and with
-JavaScript disabled in the PDF renderer).
-
-**Storage** — per-user object quotas (250 results, 250 reports, 250 parts,
-200 folders, 100 machines, 100 drawings, 20 attachments per result), a 64 MiB
-store ceiling, blob-key traversal validation, and atomic writes.
-
-**Container** — non-root `1000:1000`, `no-new-privileges`, all capabilities
-dropped, no published host port, log rotation, healthcheck.
-
-Full control set and residual risks: [docs/SECURITY.md](docs/SECURITY.md) and
-[docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md). Numeric limits per endpoint:
-[docs/API.md](docs/API.md#limits-at-a-glance).
-
----
 
 ## Known limitations
 
@@ -692,37 +419,6 @@ worse than none:
 
 The complete and deliberately candid list:
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
-
----
-
-## Documentation
-
-Start at the [documentation index](docs/INDEX.md).
-
-**For judges**
-
-- [Zoo API notes & bug reports](docs/ZOO_API_NOTES.md) — every contract we
-  exercised, every limitation we hit, with reproductions
-- [Judging map](docs/JUDGING.md) — where each criterion is demonstrated
-- [Contest demo script](docs/DEMO.md) — the walkthrough, with a fallback path
-- [Product specification](docs/PRODUCT.md) — users, workflows, evidence model
-
-**For engineers**
-
-- [Architecture](docs/ARCHITECTURE.md) — components, trust boundaries, sequences
-- [Internal HTTP API](docs/API.md) — all 23 routes with methods, params, limits
-- [Data model](docs/DATA_MODEL.md) — entities, invariants, lifecycle, retention
-- [Zoo Agent contract](docs/ZOO_AGENT.md) — request, validation, merge, fallback
-- [Testing](docs/TESTING.md) · [Code quality](docs/CODE_QUALITY.md) ·
-  [Contributing](docs/CONTRIBUTING.md)
-
-**For operators**
-
-- [OAuth setup](docs/OAUTH_SETUP.md) · [Deployment](docs/DEPLOYMENT.md) ·
-  [Operations](docs/OPERATIONS.md)
-- [Security](docs/SECURITY.md) · [Security review](docs/SECURITY_REVIEW.md)
-- [Design system](docs/DESIGN_SYSTEM.md) · [Limitations](docs/LIMITATIONS.md) ·
-  [Roadmap](docs/ROADMAP.md)
 
 ## Licence
 
